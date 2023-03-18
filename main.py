@@ -1,128 +1,146 @@
 from dotenv import load_dotenv
 import os
-import base64
-from requests import post, get, delete
-import json
+import spotipy
 
 load_dotenv()
-
 clientID = os.getenv("CLIENT_ID")
 clientSecret = os.getenv("CLIENT_SECRET")
-TOKEN = os.getenv("TOKEN")
 
-def getToken():
-    authString = clientID + ":" + clientSecret
-    authBytes = authString.encode("utf-8")
-    authBase64 = str(base64.b64encode(authBytes), "utf-8")
+#Limit Scope
+scope = "ugc-image-upload, user-read-playback-state, user-modify-playback-state, user-read-currently-playing, app-remote-control, streaming, playlist-read-private, playlist-read-collaborative, playlist-modify-private, playlist-modify-public, user-follow-modify, user-follow-read, user-read-playback-position, user-top-read, user-read-recently-played, user-library-modify, user-library-read, user-read-email, user-read-private"
 
-    url = "https://accounts.spotify.com/api/token"
-    headers = {
-        "Authorization": "Basic " + authBase64,
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    data = {"grant_type": "client_credentials"}
-    result = post(url, headers=headers, data=data)
-    jsonResult = json.loads(result.content)
-    token = jsonResult["access_token"]
-    return token
+token1 = spotipy.util.prompt_for_user_token(scope=scope,client_id=clientID,client_secret=clientSecret,redirect_uri='http://fnke-better-blend.com/')
+token2 = spotipy.util.prompt_for_user_token(scope=scope,client_id=clientID,client_secret=clientSecret,redirect_uri='http://fnke-better-blend.com/')
+sp = spotipy.Spotify(auth=token1)
+#sp2 = spotipy.Spotify(auth=token2)
 
-def getAuthHeader(token):
-    return {"Authorization": "Bearer " + token}
 
-def getTopTracks(token):
-    url = "https://api.spotify.com/v1/me/top/tracks?time_range=short_term&limit=50"
-    headers = {
-        "Authorization": "Bearer " + token,
-        "Content-Type": "application/json"
-        }
-    result = get(url,headers=headers)
-    jsonResult = json.loads(result.content)["items"]
-    return jsonResult
+#Functions
+
+
+#Get most played songs from user over the past month
+#Returns list of song URIs
+def getTopTracks():
+    return sp.current_user_top_tracks(limit=50, time_range="short_term")['items']
+
+#Get all playlists from user
+#Returns list of playlist IDs
+def getPlaylists():
+    flag = True
+    playlists = []
+    offset = 0
+    while flag:
+        newPlaylists = sp.current_user_playlists(limit=50, offset=offset)['items']
+        if (len(newPlaylists)!=50):
+            flag = False
+        offset += 50
+        playlists.extend(newPlaylists)
+        print("Getting playlists: ", offset)
+    return playlists
+
+#Get all songs from a playlist given the ID
+#Returns list of song URIs
+def getPlaylistSongs(playlistID):
+    flag = True
+    songs = []
+    offset = 0
+    while flag:
+        tracks = sp.playlist_tracks(playlistID, limit=100, offset=offset)['items']
+        if (len(tracks)!=100):
+            flag = False
+        offset += 100
+        songs.extend(tracks)
+    return songs
     
-def createPlaylist(token, username):
-    url = f"https://api.spotify.com/v1/users/{username}/playlists"
-    headers = {
-        "Authorization": "Bearer " + token,
-        "Content-Type": "application/json"
-        }
-    data = {
-        "name": "Better Blend™",
-        "description": "better together or something | github link",
-        "public": "true"
-        }
-    result = post(url, headers=headers, data=json.dumps(data))
-    print(result)
-    return json.loads(result.content)['id']
+#Create a playlist with a specified title and description given a username
+#Returns playlist ID
+def createPlaylist(srcUsr, usr2):
+    return sp.user_playlist_create(srcUsr, f'</> {srcUsr} + {usr2}', public=True, collaborative=False, description=f'A Better Together | https://github.com/FnnkE/Better-Blend <BB{srcUsr[0]}{usr2[0]}/> ')['id']
 
-def addSongs(playlistID, uris, token):
-    url = f"https://api.spotify.com/v1/playlists/{playlistID}/tracks?uris=" + uris
-    headers = {
-        "Authorization": "Bearer " + token,
-        "Content-Type": "application/json"
-        }
-    result = post(url, headers=headers)
-    return result
+#Adds songs to a playlist given the playlist ID and song URIs
+#Returns nothing
+def addSongs(playlistID, uris):
+    inRange = True
+    offset = 0
+    range = len(uris)
+    while inRange:
+        limit = offset + 100
+        if limit > range:
+            limit = range
+        sp.playlist_add_items(playlistID, uris[offset:limit])
+        print("adding songs", offset, limit)
+        offset += 100
+        if offset > range:
+            inRange = False
 
-def removeSongs(playlistID, token, songs):
-    url = f"https://api.spotify.com/v1/playlists/{playlistID}/tracks"
-    headers = {
-        "Authorization": "Bearer " + token,
-        "Content-Type": "application/json"
-        }
-    data = '{"tracks":['
-    index = 1
-    for song in songs:
-        index += 1
-        data += '{"uri":"'+ song['track']['uri'] + '"},'
-    data = data[:-1] + "]}"
-    result = delete(url, headers=headers, data=data)
-    return result
+#Removes all songs from a given playlist
+#Returns nothing
+def removeSongs(playlistID):
+    songs = getPlaylistSongs(playlistID=playlistID)
+    uris = []
+    for idx, song in enumerate(songs):
+        if idx%50 == 0 and idx != 0:
+            print("Progress: ", idx)
+            sp.playlist_remove_all_occurrences_of_items(playlistID, uris)
+            uris = []
+        newSong = song['track']['uri']
+        uris.append(newSong)
+    if len(uris) != 0:
+        sp.playlist_remove_all_occurrences_of_items(playlistID, uris)
+
+#Checks through playlists from a given user to find if a playlist already exists
+#Returns playlist ID
+def checkPlaylists(srcUsr, usr2, playlists):
+    playlistMade = False
+    for playlist in playlists:
+        if f'&lt;BB{srcUsr[0]}{usr2[0]}&#x2F;&gt;' in playlist['description'] or f'&lt;BB{usr2[0]}{srcUsr[0]}&#x2F;&gt;' in playlist['description']: #Checks if <BB/> exists in the description
+            playlistMade = True
+            newPlaylistID = playlist['id']
+            print(f'Found Playlist...{newPlaylistID}')
+            removeSongs(newPlaylistID)
+    if not playlistMade:
+        newPlaylistID = createPlaylist(srcUsr, usr2)
+        print(f'Creating New Playlist... {newPlaylistID}')
+    return newPlaylistID
+
+
+#Body
+
 
 #Get tokens from both users
-token1 = TOKEN#getToken()
-username1 = 'nerd-e'
-#token2 = getToken()
-print("Tokens created...")
-
+username1 = sp.current_user()['id']
+username2 = sp.current_user()['id']
 
 #Get top songs from both users
-topUser1 = getTopTracks(token1)
-#topUser2 = getTopTracks(token2)
-print("Top tracks received...")
+topUser1 = getTopTracks()
+topUser2 = getTopTracks()
 
+#Get all playlists from both users to find old playlist
+playlistsUser1 = getPlaylists()
+playlistsUser2 = getPlaylists()
+print("Data received...")
 
-#Create new playlist    -    If already exists
-newPlaylistID = createPlaylist(token1, username1)
-#newPlaylistID2 = createPlaylist(token2)    - Create two playlists?
-print("New playlist created...")
+#Check if playlist already exits. If not, create one
+bbUser1 = checkPlaylists(username1, username2, playlistsUser1)
+bbUser2 = checkPlaylists(username2, username1, playlistsUser2)
 
-
-
-#Combine into one array and string
-uris = ''
-songs=[]
-
-#are commas needed?
+#Combine a mix of song URIs from top tracks from both users
+uris = []
 for i in range(50):
-    if (len(songs) == 50):
+    if (len(uris) == 50):
         break
     else:
         newSong = topUser1[i]['uri']
-        if newSong not in songs:
-            songs.append(newSong)
-            uris += newSong + ','
-        """
-        if (len(songs) == 50):
+        if newSong not in uris:
+            uris.append(newSong)
+        if (len(uris) == 50):
             break
-        newSong = topUser2[i]['id']
-        if newSong not in songs:
-            songs.append(newSong)
-            ids += newSong + ','
-        """
-uris = uris[:-1] #remove comma
-print("IDs gathered...")
-
+        newSong = topUser2[i]['uri']
+        if newSong not in uris:
+            uris.append(newSong)
+print("URIs gathered...")
 
 #Add songs into playlist
-addSongs(newPlaylistID, uris, token1)
+addSongs(bbUser1, uris)
+addSongs(bbUser2, uris)
 print("DONE!")
